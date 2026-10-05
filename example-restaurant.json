@@ -1,0 +1,52 @@
+{
+  "restaurant_id": "example-restaurant",
+  "display_name": "Restaurante de Ejemplo",
+  "timezone": "America/Monterrey",
+  "phone_number": "+528100000000",
+  "hours": {
+    "mon-thu": "12:00-22:00",
+    "fri-sat": "12:00-23:30",
+    "sun": "13:00-21:00"
+  },
+  "order_channels": {
+    "pickup": true,
+    "delivery": true,
+    "delivery_radius_km": 5
+  },
+  "delivery_output": {
+    "type": "whatsapp",
+    "whatsapp_number": "+528111111111",
+    "also_dashboard": true
+  },
+  "escalation": {
+    "human_fallback_number": null,
+    "max_clarification_attempts": 2,
+    "on_fail": "take_message"
+  },
+  "menu": [
+    {
+      "item_id": "tacos-al-pastor",
+      "name": "Tacos al pastor",
+      "price_mxn": 18,
+      "unit": "por taco",
+      "modifiers": [
+        { "name": "con piña", "default": true },
+        { "name": "sin cebolla", "default": false },
+        { "name": "extra salsa", "default": false }
+      ],
+      "allergens": []
+    },
+    {
+      "item_id": "agua-de-horchata",
+      "name": "Agua de horchata",
+      "price_mxn": 35,
+      "unit": "vaso",
+      "modifiers": [],
+      "allergens": ["lactosa (según receta)"]
+    }
+  ],
+  "faqs": [
+    { "q": "¿Tienen estacionamiento?", "a": "Sí, estacionamiento gratuito frente al local." },
+    { "q": "¿Aceptan tarjeta?", "a": "Sí, tarjeta y efectivo." }
+  ]
+}
