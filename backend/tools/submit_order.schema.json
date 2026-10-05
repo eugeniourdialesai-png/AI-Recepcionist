@@ -1,0 +1,44 @@
+{
+  "name": "submit_order",
+  "description": "Entrega un pedido YA CONFIRMADO verbalmente por el cliente al backend del restaurante. Solo se llama después de leer el pedido completo en voz alta y recibir confirmación explícita del cliente.",
+  "parameters": {
+    "type": "object",
+    "required": ["restaurant_id", "channel", "items", "customer_confirmed"],
+    "properties": {
+      "restaurant_id": {
+        "type": "string",
+        "description": "ID del restaurante, fijo por agente/número."
+      },
+      "channel": {
+        "type": "string",
+        "enum": ["pickup", "delivery"]
+      },
+      "customer_name": { "type": "string" },
+      "customer_phone": { "type": "string" },
+      "delivery_address": {
+        "type": "string",
+        "description": "Requerido solo si channel = delivery."
+      },
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["item_id", "quantity"],
+          "properties": {
+            "item_id": { "type": "string", "description": "Debe existir en el menú del negocio." },
+            "quantity": { "type": "integer", "minimum": 1 },
+            "modifiers": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        }
+      },
+      "notes": { "type": "string" },
+      "customer_confirmed": {
+        "type": "boolean",
+        "description": "DEBE ser true. Confirma que el pedido fue leído en voz alta y el cliente dijo que sí."
+      }
+    }
+  }
+}
