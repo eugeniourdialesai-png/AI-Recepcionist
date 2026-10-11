@@ -89,6 +89,55 @@ function validateTimezone(timeZone) {
   }
 }
 
+// --- Tono: config.tone = "formal" (default) | "casual" ---
+const TONES = {
+  formal: {
+    style: [
+      'Hablas de "usted". Tu tono es profesional y cálido, como un buen recepcionista de restaurante: amable, atento y seguro.',
+    ],
+    confirmations: ["claro", "muy bien", "enseguida", "perfecto", "con gusto"],
+    wait: '"permítame un momento", "enseguida lo registro"',
+    greeting: (name) => `Gracias por llamar a ${name}, ¿en qué le puedo ayudar?`,
+  },
+  casual: {
+    style: [
+      'Hablas de "tú". Tu tono es cercano y cálido, como alguien del equipo del restaurante que atiende con gusto, pero siempre educado.',
+    ],
+    confirmations: ["claro", "va", "perfecto", "listo", "con gusto"],
+    wait: '"dame un momento", "ahorita lo registro"',
+    greeting: (name) => `Gracias por llamar a ${name}, ¿en qué te puedo ayudar?`,
+  },
+};
+
+const COMMON_STYLE = [
+  "Frases cortas. Una sola idea o una sola pregunta por turno; espera la respuesta antes de seguir.",
+  "Sin muletillas ni relleno: nunca digas \"este\", \"eh\", \"órale\", \"pues\" ni \"o sea\", y no empieces tus frases con \"bueno\".",
+  "Sin frases de call center: nada de \"su llamada es muy importante\", \"le informo que\", \"estimado cliente\", \"con todo gusto le atiendo\" ni \"¿hay algo más en lo que le pueda ayudar?\" después de cada respuesta.",
+];
+
+// Etiquetas de emoción: solo los modelos v3 las interpretan. Con cualquier
+// otro modelo el agente las leería en voz alta, así que no se incluyen.
+function supportsAudioTags(ttsModel) {
+  return /^eleven_v3/.test(ttsModel || "");
+}
+
+function formatStyle(tone, ttsModel) {
+  const confirmations = tone.confirmations.map((c) => `"${c}"`).join(", ");
+  const lines = [
+    ...tone.style,
+    ...COMMON_STYLE,
+    `Para confirmar, varía: ${confirmations}. No repitas la misma confirmación dos veces seguidas en la llamada.`,
+  ];
+  if (supportsAudioTags(ttsModel)) {
+    lines.push(
+      "Etiquetas de emoción: usa [warmly] solo al saludar y al despedirte, y nada más. No uses ninguna otra etiqueta ni en ningún otro momento."
+    );
+  } else {
+    lines.push("No uses etiquetas entre corchetes como [warmly] en lo que dices: se leerían en voz alta.");
+  }
+  return lines.map((l) => `- ${l}`).join("\n");
+}
+
 function lookup(vars, dottedPath) {
   return dottedPath.split(".").reduce((obj, key) => (obj == null ? undefined : obj[key]), vars);
 }
@@ -123,7 +172,14 @@ const template = rawTemplate.slice(separator + 5).trim();
 
 validateTimezone(config.timezone);
 
+const toneName = config.tone ?? "formal";
+const tone = TONES[toneName];
+if (!tone) fail(`tone inválido: "${toneName}". Opciones: ${Object.keys(TONES).join(", ")}.`);
+const ttsModel = config.voice?.tts_model;
+
 const vars = {
+  style_formatted: formatStyle(tone, ttsModel),
+  wait_phrases: tone.wait,
   ...config,
   menu_formatted: formatMenu(config.menu),
   hours_formatted: formatHours(config.hours),
@@ -138,7 +194,9 @@ const unresolved = [...new Set(prompt.match(/\{\{[^}]*\}\}/g) || [])].filter(
 if (unresolved.length) fail(`quedaron variables sin resolver: ${unresolved.join(", ")}`);
 
 if (!config.display_name) fail("el config no tiene display_name.");
-const firstMessage = `Gracias por llamar a ${config.display_name}, ¿en qué le puedo ayudar?`;
+// Sin etiquetas: la doc de ElevenLabs no confirma que se interpreten en el
+// first_message (solo en las respuestas del LLM).
+const firstMessage = tone.greeting(config.display_name);
 
 fs.mkdirSync(OUT_DIR, { recursive: true });
 fs.writeFileSync(path.join(OUT_DIR, `${restaurantId}.md`), prompt);

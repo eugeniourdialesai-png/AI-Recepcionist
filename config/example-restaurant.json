@@ -3,6 +3,18 @@
   "display_name": "Restaurante de Ejemplo",
   "timezone": "America/Monterrey",
   "phone_number": "+528100000000",
+  "tone": "formal",
+  "voice": {
+    "voice_id": "htFfPSZGJwjBv1CL0aMD",
+    "tts_model": "eleven_v3_conversational",
+    "stability": 0.5,
+    "speed": 1,
+    "expressive_mode": true
+  },
+  "background_sound": {
+    "preset": "restaurant",
+    "volume": 0.15
+  },
   "hours": {
     "mon-thu": "12:00-22:00",
     "fri-sat": "12:00-23:30",
@@ -30,9 +42,18 @@
       "price_mxn": 18,
       "unit": "por taco",
       "modifiers": [
-        { "name": "con piña", "default": true },
-        { "name": "sin cebolla", "default": false },
-        { "name": "extra salsa", "default": false }
+        {
+          "name": "con piña",
+          "default": true
+        },
+        {
+          "name": "sin cebolla",
+          "default": false
+        },
+        {
+          "name": "extra salsa",
+          "default": false
+        }
       ],
       "allergens": []
     },
@@ -42,11 +63,19 @@
       "price_mxn": 35,
       "unit": "vaso",
       "modifiers": [],
-      "allergens": ["lactosa (según receta)"]
+      "allergens": [
+        "lactosa (según receta)"
+      ]
     }
   ],
   "faqs": [
-    { "q": "¿Tienen estacionamiento?", "a": "Sí, estacionamiento gratuito frente al local." },
-    { "q": "¿Aceptan tarjeta?", "a": "Sí, tarjeta y efectivo." }
+    {
+      "q": "¿Tienen estacionamiento?",
+      "a": "Sí, estacionamiento gratuito frente al local."
+    },
+    {
+      "q": "¿Aceptan tarjeta?",
+      "a": "Sí, tarjeta y efectivo."
+    }
   ]
 }
