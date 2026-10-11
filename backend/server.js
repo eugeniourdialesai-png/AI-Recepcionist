@@ -5,9 +5,13 @@
 //
 // Uso: configura el "tool" submit_order.schema.json en el agente de
 // ElevenLabs para que apunte su webhook a POST /webhook/submit-order de
-// este servidor.
+// este servidor, con el header X-Webhook-Secret.
+//
+// Los mensajes de error son frases completas en español: el agente los lee
+// y debe poder corregir el pedido con ellos (o explicárselo al cliente).
 
 import express from "express";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,88 +20,207 @@ import "dotenv/config";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_DIR = path.join(__dirname, "..", "config");
 const ORDERS_DIR = path.join(__dirname, "orders");
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
+const RESTAURANT_ID_PATTERN = /^[a-z0-9-]+$/;
+const CHANNELS = ["pickup", "delivery"];
 
 if (!fs.existsSync(ORDERS_DIR)) fs.mkdirSync(ORDERS_DIR, { recursive: true });
 
+if (!WEBHOOK_SECRET) {
+  console.warn(
+    "\n[ADVERTENCIA] WEBHOOK_SECRET no está definido. El servidor arranca, pero " +
+      "/webhook/submit-order y /restaurants/:id/orders van a responder 503 hasta " +
+      "que lo configures (Render → Environment).\n"
+  );
+}
+
 const app = express();
 app.use(express.json());
+
+// --- Autenticación: header X-Webhook-Secret contra WEBHOOK_SECRET. ---
+// Sin secreto configurado se rechaza todo (fail-closed) en lugar de dejar
+// el endpoint abierto a pedidos falsos.
+function requireSecret(req, res, next) {
+  if (!WEBHOOK_SECRET) {
+    return res.status(503).json({
+      ok: false,
+      error: "El sistema de pedidos no está configurado todavía. Toma el nombre y número del cliente para que el restaurante le devuelva la llamada.",
+    });
+  }
+  const given = Buffer.from(req.get("X-Webhook-Secret") || "");
+  const expected = Buffer.from(WEBHOOK_SECRET);
+  if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) {
+    return res.status(401).json({ ok: false, error: "No autorizado." });
+  }
+  next();
+}
 
 // --- Config multi-tenant: un JSON por restaurante, cargado en memoria. ---
 // Cambiar por una tabla real (Postgres/SQLite) cuando haya más de un
 // puñado de clientes; para v1 y para probar el producto, archivos planos
 // alcanzan y son más fáciles de auditar a mano.
 function loadRestaurantConfig(restaurantId) {
+  if (typeof restaurantId !== "string" || !RESTAURANT_ID_PATTERN.test(restaurantId)) return null;
   const file = path.join(CONFIG_DIR, `${restaurantId}.json`);
   if (!fs.existsSync(file)) return null;
   return JSON.parse(fs.readFileSync(file, "utf-8"));
 }
 
+// modifiers llega como array de strings (esquema oficial), pero también se
+// acepta un string ("sin cebolla, extra salsa") por si el LLM lo manda así.
+function normalizeModifiers(modifiers) {
+  if (modifiers === undefined || modifiers === null || modifiers === "") return [];
+  const list = typeof modifiers === "string" ? modifiers.split(/[,;]/) : modifiers;
+  if (!Array.isArray(list) || list.some((m) => typeof m !== "string")) return null;
+  return list.map((m) => m.trim()).filter(Boolean);
+}
+
+function validMenuList(config) {
+  return config.menu.map((m) => `${m.name} (item_id: ${m.item_id})`).join(", ");
+}
+
+// Valida y normaliza las líneas del pedido. Devuelve { items, errors }.
 function validateOrderAgainstMenu(config, items) {
   const menuById = new Map(config.menu.map((m) => [m.item_id, m]));
   const errors = [];
+  const normalized = [];
   for (const line of items) {
-    const menuItem = menuById.get(line.item_id);
+    const menuItem = menuById.get(line?.item_id);
     if (!menuItem) {
-      errors.push(`item_id desconocido: ${line.item_id}`);
+      errors.push(`El platillo "${line?.item_id}" no existe en el menú.`);
       continue;
     }
-    if (!Number.isInteger(line.quantity) || line.quantity < 1) {
-      errors.push(`cantidad inválida para ${line.item_id}: ${line.quantity}`);
+    const quantity = Number(line.quantity);
+    if (!Number.isInteger(quantity) || quantity < 1) {
+      errors.push(`La cantidad de ${menuItem.name} debe ser un número entero mayor a cero (llegó: ${line.quantity}).`);
+      continue;
     }
+    const modifiers = normalizeModifiers(line.modifiers);
+    if (modifiers === null) {
+      errors.push(`Las modificaciones de ${menuItem.name} deben ser una lista de textos, por ejemplo ["sin cebolla"].`);
+      continue;
+    }
+    normalized.push({ item_id: menuItem.item_id, name: menuItem.name, quantity, modifiers, unit_price_mxn: menuItem.price_mxn });
   }
-  return errors;
+  if (errors.some((e) => e.includes("no existe en el menú"))) {
+    errors.push(`Platillos válidos: ${validMenuList(config)}.`);
+  }
+  return { items: normalized, errors };
+}
+
+function customerLabel(order) {
+  return order.customer_name || order.customer_phone || "cliente";
 }
 
 // Stub — reemplazar con Twilio WhatsApp API o WhatsApp Business Cloud API.
 async function sendWhatsAppNotification(config, order) {
-  console.log(
-    `[WHATSAPP STUB] -> ${config.delivery_output.whatsapp_number}: ` +
-      `Nuevo pedido de ${order.customer_name || "cliente"} (${order.channel}): ` +
-      order.items.map((i) => `${i.quantity}x ${i.item_id}`).join(", ")
-  );
+  const lines = [
+    `Nuevo pedido ${order.order_id} — ${order.channel === "delivery" ? "A DOMICILIO" : "PARA RECOGER"}`,
+    `Cliente: ${customerLabel(order)}`,
+    `Teléfono: ${order.customer_phone || "no disponible"}`,
+    ...(order.channel === "delivery" ? [`Dirección: ${order.delivery_address}`] : []),
+    "",
+    ...order.items.map(
+      (i) => `${i.quantity}x ${i.name}${i.modifiers.length ? ` (${i.modifiers.join(", ")})` : ""}`
+    ),
+    "",
+    `Total estimado: $${order.total_mxn} MXN`,
+    ...(order.notes ? [`Notas: ${order.notes}`] : []),
+  ];
+  console.log(`[WHATSAPP STUB] -> ${config.delivery_output.whatsapp_number}:\n${lines.join("\n")}`);
 }
 
-app.post("/webhook/submit-order", async (req, res) => {
-  const order = req.body;
+app.post("/webhook/submit-order", requireSecret, async (req, res) => {
+  const order = req.body || {};
 
-  if (!order.customer_confirmed) {
-    return res
-      .status(400)
-      .json({ ok: false, error: "customer_confirmed debe ser true. El pedido no fue leído/confirmado." });
+  if (order.customer_confirmed !== true) {
+    return res.status(400).json({
+      ok: false,
+      error: "El pedido no se registró porque el cliente no lo ha confirmado. Lee el pedido completo en voz alta, espera a que el cliente diga que sí y vuelve a enviarlo con customer_confirmed = true.",
+    });
   }
 
   const config = loadRestaurantConfig(order.restaurant_id);
   if (!config) {
-    return res.status(404).json({ ok: false, error: `restaurant_id no configurado: ${order.restaurant_id}` });
+    return res.status(404).json({
+      ok: false,
+      error: "No encontré la configuración de este restaurante, así que no puedo registrar el pedido. Toma el nombre y número del cliente y avísale que el restaurante le devolverá la llamada.",
+    });
   }
 
-  if (order.channel === "delivery" && !order.delivery_address) {
-    return res.status(400).json({ ok: false, error: "delivery_address requerido para channel=delivery" });
+  if (!CHANNELS.includes(order.channel)) {
+    return res.status(400).json({
+      ok: false,
+      error: `El tipo de entrega debe ser "pickup" (para recoger) o "delivery" (a domicilio). Pregúntale al cliente cuál prefiere.`,
+    });
   }
 
-  const menuErrors = validateOrderAgainstMenu(config, order.items || []);
-  if (menuErrors.length > 0) {
-    return res.status(422).json({ ok: false, error: "Pedido no coincide con el menú", details: menuErrors });
+  if (!config.order_channels?.[order.channel]) {
+    const alt = CHANNELS.find((c) => c !== order.channel && config.order_channels?.[c]);
+    return res.status(400).json({
+      ok: false,
+      error:
+        `${config.display_name} no ofrece pedidos ${order.channel === "delivery" ? "a domicilio" : "para recoger"}.` +
+        (alt ? ` Ofrécele al cliente la opción ${alt === "delivery" ? "a domicilio" : "para recoger"}.` : ""),
+    });
+  }
+
+  const deliveryAddress = typeof order.delivery_address === "string" ? order.delivery_address.trim() : "";
+  if (order.channel === "delivery" && !deliveryAddress) {
+    return res.status(400).json({
+      ok: false,
+      error: "Falta la dirección de entrega. Pídele al cliente su dirección completa (calle, número, colonia) y vuelve a enviar el pedido.",
+    });
+  }
+
+  if (!Array.isArray(order.items) || order.items.length === 0) {
+    return res.status(400).json({
+      ok: false,
+      error: "El pedido no tiene platillos. Pregúntale al cliente qué quiere ordenar.",
+    });
+  }
+
+  const { items, errors } = validateOrderAgainstMenu(config, order.items);
+  if (errors.length > 0) {
+    return res.status(422).json({ ok: false, error: errors.join(" ") });
   }
 
   const record = {
-    ...order,
+    order_id: crypto.randomBytes(3).toString("hex").toUpperCase(),
+    restaurant_id: config.restaurant_id,
+    channel: order.channel,
+    customer_name: typeof order.customer_name === "string" ? order.customer_name.trim() : "",
+    customer_phone: typeof order.customer_phone === "string" ? order.customer_phone.trim() : "",
+    delivery_address: order.channel === "delivery" ? deliveryAddress : "",
+    items,
+    total_mxn: items.reduce((sum, i) => sum + i.quantity * i.unit_price_mxn, 0),
+    notes: typeof order.notes === "string" ? order.notes.trim() : "",
+    customer_confirmed: true,
     received_at: new Date().toISOString(),
     status: "new",
   };
 
-  const restaurantOrdersFile = path.join(ORDERS_DIR, `${order.restaurant_id}.jsonl`);
+  const restaurantOrdersFile = path.join(ORDERS_DIR, `${record.restaurant_id}.jsonl`);
   fs.appendFileSync(restaurantOrdersFile, JSON.stringify(record) + "\n");
 
   if (config.delivery_output?.type === "whatsapp") {
-    await sendWhatsAppNotification(config, order);
+    await sendWhatsAppNotification(config, record);
   }
 
-  return res.json({ ok: true });
+  return res.json({
+    ok: true,
+    order_id: record.order_id,
+    total_mxn: record.total_mxn,
+    message: `Pedido registrado con el número ${record.order_id}. Total estimado: ${record.total_mxn} pesos.`,
+  });
 });
 
 // Endpoint simple para el dashboard: últimos pedidos de un restaurante.
-app.get("/restaurants/:id/orders", (req, res) => {
+// Protegido con el mismo secreto: contiene teléfonos y direcciones.
+app.get("/restaurants/:id/orders", requireSecret, (req, res) => {
+  if (!RESTAURANT_ID_PATTERN.test(req.params.id)) {
+    return res.status(400).json({ ok: false, error: "restaurant_id inválido." });
+  }
   const file = path.join(ORDERS_DIR, `${req.params.id}.jsonl`);
   if (!fs.existsSync(file)) return res.json({ orders: [] });
   const lines = fs.readFileSync(file, "utf-8").trim().split("\n").filter(Boolean);
@@ -106,6 +229,19 @@ app.get("/restaurants/:id/orders", (req, res) => {
 });
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
+
+// JSON mal formado u otros errores: responder JSON legible, no HTML.
+app.use((err, _req, res, _next) => {
+  console.error(err);
+  const status = err.type === "entity.parse.failed" ? 400 : 500;
+  res.status(status).json({
+    ok: false,
+    error:
+      status === 400
+        ? "Los datos del pedido llegaron mal formados. Vuelve a intentar enviar el pedido."
+        : "Hubo un error interno al registrar el pedido. Toma el nombre y número del cliente para que el restaurante le devuelva la llamada.",
+  });
+});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`recepcionista-ia backend escuchando en :${PORT}`));

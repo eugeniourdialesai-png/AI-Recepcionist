@@ -1,40 +1,62 @@
 {
   "name": "submit_order",
   "description": "Entrega un pedido YA CONFIRMADO verbalmente por el cliente al backend del restaurante. Solo se llama después de leer el pedido completo en voz alta y recibir confirmación explícita del cliente.",
+  "headers": {
+    "X-Webhook-Secret": "<WEBHOOK_SECRET, configurado como secreto en ElevenLabs — nunca en el repo>"
+  },
   "parameters": {
     "type": "object",
     "required": ["restaurant_id", "channel", "items", "customer_confirmed"],
     "properties": {
       "restaurant_id": {
         "type": "string",
-        "description": "ID del restaurante, fijo por agente/número."
+        "description": "ID del restaurante, fijo por agente/número. Viene de la dynamic variable {{restaurant_id}}."
       },
       "channel": {
         "type": "string",
-        "enum": ["pickup", "delivery"]
+        "enum": ["pickup", "delivery"],
+        "description": "Tipo de pedido: pickup o delivery, según lo que indique el cliente."
       },
-      "customer_name": { "type": "string" },
-      "customer_phone": { "type": "string" },
+      "customer_name": {
+        "type": "string",
+        "description": "Nombre del cliente, si lo dio. Opcional."
+      },
+      "customer_phone": {
+        "type": "string",
+        "description": "Número de quien llama. Viene de la dynamic variable {{system__caller_id}}."
+      },
       "delivery_address": {
         "type": "string",
-        "description": "Requerido solo si channel = delivery."
+        "description": "Dirección de entrega. Requerido solo si channel = delivery."
       },
       "items": {
         "type": "array",
+        "description": "Lista de platillos que pidió el cliente. Un elemento por cada platillo distinto.",
         "items": {
           "type": "object",
           "required": ["item_id", "quantity"],
           "properties": {
-            "item_id": { "type": "string", "description": "Debe existir en el menú del negocio." },
-            "quantity": { "type": "integer", "minimum": 1 },
+            "item_id": {
+              "type": "string",
+              "description": "ID del platillo tal como aparece entre corchetes en el menú. Nunca inventes un ID."
+            },
+            "quantity": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Cantidad de este platillo. Si no la dice, es 1."
+            },
             "modifiers": {
               "type": "array",
-              "items": { "type": "string" }
+              "items": { "type": "string" },
+              "description": "Cambios al platillo, uno por elemento, por ejemplo [\"sin cebolla\", \"extra salsa\"]. El backend también acepta un string separado por comas."
             }
           }
         }
       },
-      "notes": { "type": "string" },
+      "notes": {
+        "type": "string",
+        "description": "Notas adicionales del pedido, si el cliente menciona alguna."
+      },
       "customer_confirmed": {
         "type": "boolean",
         "description": "DEBE ser true. Confirma que el pedido fue leído en voz alta y el cliente dijo que sí."
