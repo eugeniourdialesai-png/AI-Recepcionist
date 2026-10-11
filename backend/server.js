@@ -16,6 +16,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import "dotenv/config";
+import { getStatus } from "./hours.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_DIR = path.join(__dirname, "..", "config");
@@ -110,6 +111,14 @@ function validateOrderAgainstMenu(config, items) {
   return { items: normalized, errors };
 }
 
+// ?at=<ISO> simula otra hora. Solo lo acepta GET /status (pruebas);
+// submit_order siempre usa la hora real.
+function requestTime(req) {
+  if (!req.query.at) return new Date();
+  const date = new Date(req.query.at);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 function customerLabel(order) {
   return order.customer_name || order.customer_phone || "cliente";
 }
@@ -147,6 +156,17 @@ app.post("/webhook/submit-order", requireSecret, async (req, res) => {
     return res.status(404).json({
       ok: false,
       error: "No encontré la configuración de este restaurante, así que no puedo registrar el pedido. Toma el nombre y número del cliente y avísale que el restaurante le devolverá la llamada.",
+    });
+  }
+
+  // Defensa: aunque el agente se equivoque, con el restaurante cerrado no
+  // entra ningún pedido. Siempre con la hora real (sin ?at).
+  const status = getStatus(config, new Date());
+  if (!status.is_open) {
+    return res.status(409).json({
+      ok: false,
+      is_open: false,
+      error: `${status.message} No se registró el pedido. Ofrécele al cliente tomar su nombre y número para que el restaurante lo llame cuando abra.`,
     });
   }
 
@@ -215,6 +235,21 @@ app.post("/webhook/submit-order", requireSecret, async (req, res) => {
     total_mxn: record.total_mxn,
     message: `Pedido registrado con el número ${record.order_id}. Total estimado: ${record.total_mxn} pesos.`,
   });
+});
+
+// Estado de horario (lo usa la tool check_hours del agente). El agente lee
+// "message" tal cual; el resto es contexto en texto natural de 12 horas.
+app.get("/restaurants/:id/status", requireSecret, (req, res) => {
+  const config = loadRestaurantConfig(req.params.id);
+  if (!config) {
+    return res.status(404).json({
+      ok: false,
+      error: "No encontré la configuración de este restaurante. Toma el nombre y número del cliente para que el restaurante le devuelva la llamada.",
+    });
+  }
+  const now = requestTime(req);
+  if (!now) return res.status(400).json({ ok: false, error: "El parámetro at no es una fecha válida." });
+  res.json({ ok: true, ...getStatus(config, now) });
 });
 
 // Endpoint simple para el dashboard: últimos pedidos de un restaurante.

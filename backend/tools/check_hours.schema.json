@@ -1,0 +1,24 @@
+{
+  "name": "check_hours",
+  "description": "Dice si el restaurante está abierto en este momento, a qué hora cierra hoy o cuándo vuelve a abrir. Llámala antes de responder cualquier pregunta sobre si está abierto u horario de hoy, y antes de tomar un pedido. Responde con el campo message tal cual.",
+  "method": "GET",
+  "url": "https://ai-recepcionist-kwao.onrender.com/restaurants/{restaurant_id}/status",
+  "headers": {
+    "X-Webhook-Secret": "<WEBHOOK_SECRET, configurado como secreto en ElevenLabs — nunca en el repo>"
+  },
+  "path_params": {
+    "restaurant_id": {
+      "type": "string",
+      "description": "Viene de la dynamic variable {{restaurant_id}}."
+    }
+  },
+  "response_example": {
+    "ok": true,
+    "is_open": false,
+    "message": "En este momento Restaurante de Ejemplo está cerrado. Abre hoy a la una de la tarde.",
+    "local_time_text": "Es domingo, la una y dos de la mañana.",
+    "today_hours_text": "Hoy domingo el horario es de una de la tarde a nueve de la noche.",
+    "closes_at_text": null,
+    "next_opening_text": "abre hoy a la una de la tarde"
+  }
+}

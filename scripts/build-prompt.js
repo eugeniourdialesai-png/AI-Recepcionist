@@ -12,14 +12,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { formatWeeklyHours } from "../backend/hours.js";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const TEMPLATE = path.join(ROOT, "prompts", "receptionist-system-prompt.md");
 const OUT_DIR = path.join(ROOT, "prompts", "generated");
 const RUNTIME_VARIABLE = /^system__[a-z_]+$/;
-
-const DAYS = { mon: "lunes", tue: "martes", wed: "miércoles", thu: "jueves", fri: "viernes", sat: "sábado", sun: "domingo" };
-const DAY_ORDER = Object.keys(DAYS);
 
 function fail(message) {
   console.error(`Error: ${message}`);
@@ -44,24 +42,13 @@ function formatMenu(menu) {
     .join("\n");
 }
 
-// "mon-thu" -> "lunes a jueves", "fri-sat" -> "viernes y sábado", "sun" -> "domingo".
-function formatDayRange(key) {
-  const [from, to] = key.split("-");
-  if (!DAYS[from] || (to && !DAYS[to])) fail(`día no reconocido en hours: "${key}". Usa mon, tue, wed, thu, fri, sat, sun.`);
-  if (!to) return DAYS[from];
-  const adjacent = DAY_ORDER.indexOf(to) - DAY_ORDER.indexOf(from) === 1;
-  return `${DAYS[from]} ${adjacent ? "y" : "a"} ${DAYS[to]}`;
-}
-
+// Mismo cálculo que usa el backend (backend/hours.js), en 12 horas naturales.
 function formatHours(hours) {
-  if (!hours || Object.keys(hours).length === 0) fail("el config no tiene horario.");
-  return Object.entries(hours)
-    .map(([days, range]) => {
-      const [open, close] = String(range).split("-");
-      if (!open || !close) fail(`horario inválido para "${days}": "${range}". Usa "HH:MM-HH:MM".`);
-      return `- ${formatDayRange(days)}: de ${open} a ${close}`;
-    })
-    .join("\n");
+  try {
+    return formatWeeklyHours(hours);
+  } catch (err) {
+    fail(err.message);
+  }
 }
 
 function formatFaqs(faqs) {

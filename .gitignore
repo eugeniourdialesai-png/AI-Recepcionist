@@ -3,3 +3,4 @@ node_modules/
 backend/orders/
 .DS_Store
 _archive/elevenlabs-backup-*.json
+_archive/conversacion-*.json
