@@ -20,7 +20,9 @@ import "dotenv/config";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_DIR = path.join(__dirname, "..", "config");
 const ORDERS_DIR = path.join(__dirname, "orders");
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
+// trim(): un salto de línea o espacio pegado por accidente en Render no debe
+// romper la autenticación.
+const WEBHOOK_SECRET = (process.env.WEBHOOK_SECRET || "").trim();
 const RESTAURANT_ID_PATTERN = /^[a-z0-9-]+$/;
 const CHANNELS = ["pickup", "delivery"];
 
@@ -47,7 +49,7 @@ function requireSecret(req, res, next) {
       error: "El sistema de pedidos no está configurado todavía. Toma el nombre y número del cliente para que el restaurante le devuelva la llamada.",
     });
   }
-  const given = Buffer.from(req.get("X-Webhook-Secret") || "");
+  const given = Buffer.from((req.get("X-Webhook-Secret") || "").trim());
   const expected = Buffer.from(WEBHOOK_SECRET);
   if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) {
     return res.status(401).json({ ok: false, error: "No autorizado." });
