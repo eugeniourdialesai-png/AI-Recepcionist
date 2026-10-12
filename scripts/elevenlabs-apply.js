@@ -2,7 +2,8 @@
 //   0. respaldo del agente y la tool en _archive/
 //   1. crea (o actualiza) el secreto del webhook en el workspace
 //   2. actualiza la tool submit_order (esquema, header con secreto, timeout)
-//      y crea/actualiza la tool check_hours (GET /restaurants/{id}/status)
+//      y crea/actualiza las tools check_hours (GET /restaurants/{id}/status)
+//      y take_message (POST /webhook/take-message)
 //   3. actualiza el agente (prompt, first message, LLM, idioma, voz,
 //      stability, velocidad, tools asignadas, placeholder de
 //      restaurant_id, sonido de fondo). La voz sale de config.voice y el
@@ -25,6 +26,7 @@ const API = "https://api.elevenlabs.io";
 const BACKEND_URL = "https://ai-recepcionist-kwao.onrender.com";
 const WEBHOOK_URL = `${BACKEND_URL}/webhook/submit-order`;
 const STATUS_URL = `${BACKEND_URL}/restaurants/{restaurant_id}/status`;
+const MESSAGE_URL = `${BACKEND_URL}/webhook/take-message`;
 const SECRET_NAME = "recepcionista_webhook_secret";
 const TOOL_TIMEOUT_SECS = 60;
 
@@ -137,6 +139,57 @@ function checkHoursToolConfig(secretId) {
   };
 }
 
+// --- take_message (debe coincidir con backend/tools/take_message.schema.json) ---
+function takeMessageToolConfig(secretId) {
+  return {
+    type: "webhook",
+    name: "take_message",
+    description:
+      "Registra un mensaje para que el restaurante le devuelva la llamada al cliente. Llámala SIEMPRE que ofrezcas que el restaurante le va a llamar (restaurante cerrado, no le entendiste, u otro caso), después de tener su teléfono. Funciona aunque el restaurante esté cerrado. Si falla, no prometas la llamada.",
+    response_timeout_secs: TOOL_TIMEOUT_SECS,
+    api_schema: {
+      url: MESSAGE_URL,
+      method: "POST",
+      content_type: "application/json",
+      request_headers: { "X-Webhook-Secret": { secret_id: secretId } },
+      request_body_schema: {
+        type: "object",
+        description: "Datos para que el restaurante le devuelva la llamada al cliente.",
+        required: ["restaurant_id", "reason"],
+        properties: {
+          restaurant_id: fromVar("string", "restaurant_id"),
+          caller_id: fromVar("string", "system__caller_id"),
+          customer_name: str("Nombre del cliente, si lo dio."),
+          customer_phone: str("Número que el cliente dio para que le llamen, con lada. Si no dio uno distinto, omítelo y se usa el de la llamada."),
+          reason: str("cerrado = llamó fuera de horario; no_entendio = no se le entendió tras varios intentos; otro = cualquier otro motivo.", {
+            enum: ["cerrado", "no_entendio", "otro"],
+          }),
+          message: str("Resumen breve, en una frase, de lo que quería el cliente."),
+        },
+      },
+    },
+  };
+}
+
+// Busca una tool por nombre; si existe la actualiza y si no, la crea.
+async function upsertTool(step, toolConfigToApply) {
+  const { name } = toolConfigToApply;
+  const { tools: found } = await api("GET", `/v1/convai/tools?search=${name}&types=webhook`);
+  const id = found.find((x) => x.tool_config?.name === name)?.id;
+  if (args.dryRun) {
+    console.log(`${step}. [dry-run] ${id ? `PATCH /v1/convai/tools/${id}` : "POST /v1/convai/tools (nueva)"} — ${name}`);
+    return id || `<nueva ${name}>`;
+  }
+  if (id) {
+    await api("PATCH", `/v1/convai/tools/${id}`, { tool_config: toolConfigToApply });
+    console.log(`${step}. Tool ${name} actualizada: ${id}`);
+    return id;
+  }
+  const created = await api("POST", "/v1/convai/tools", { tool_config: toolConfigToApply });
+  console.log(`${step}. Tool ${name} creada: ${created.id}`);
+  return created.id;
+}
+
 function check(results, label, actual, expected) {
   const ok = JSON.stringify(actual) === JSON.stringify(expected);
   results.push({ ok, label, actual, expected });
@@ -194,20 +247,12 @@ if (args.dryRun) {
   console.log("2. Tool actualizada");
 }
 
-// 2b. Tool check_hours: se busca por nombre; si no existe se crea.
+// 2b/2c. Tools check_hours y take_message.
 const hoursConfig = checkHoursToolConfig(secret.secret_id);
-const { tools: found } = await api("GET", "/v1/convai/tools?search=check_hours&types=webhook");
-let hoursToolId = found.find((x) => x.tool_config?.name === "check_hours")?.id;
-if (args.dryRun) {
-  console.log(`2b. [dry-run] ${hoursToolId ? `PATCH /v1/convai/tools/${hoursToolId}` : "POST /v1/convai/tools (nueva)"}\n${JSON.stringify({ tool_config: hoursConfig }, null, 2)}`);
-  hoursToolId = hoursToolId || "<nueva>";
-} else if (hoursToolId) {
-  await api("PATCH", `/v1/convai/tools/${hoursToolId}`, { tool_config: hoursConfig });
-  console.log(`2b. Tool check_hours actualizada: ${hoursToolId}`);
-} else {
-  hoursToolId = (await api("POST", "/v1/convai/tools", { tool_config: hoursConfig })).id;
-  console.log(`2b. Tool check_hours creada: ${hoursToolId}`);
-}
+const messageConfig = takeMessageToolConfig(secret.secret_id);
+const hoursToolId = await upsertTool("2b", hoursConfig);
+const messageToolId = await upsertTool("2c", messageConfig);
+if (args.dryRun) console.log(`    take_message:\n${JSON.stringify({ tool_config: messageConfig }, null, 2)}`);
 
 // 3. Agente: se manda el conversation_config completo con los cambios.
 const conversationConfig = structuredClone(agentBefore.conversation_config);
@@ -226,7 +271,7 @@ agentCfg.prompt.llm = args.llm;
 // Sin timezone: si está puesto, ElevenLabs mete la hora en el prompt y el
 // LLM intenta decidir solo si está abierto. Eso lo hace check_hours.
 agentCfg.prompt.timezone = null;
-agentCfg.prompt.tool_ids = [...new Set([...(agentCfg.prompt.tool_ids || []), args.tool, hoursToolId])];
+agentCfg.prompt.tool_ids = [...new Set([...(agentCfg.prompt.tool_ids || []), args.tool, hoursToolId, messageToolId])];
 delete agentCfg.prompt.tools; // deprecado; no se puede mandar junto con tool_ids
 conversationConfig.tts.model_id = voice.tts_model;
 conversationConfig.tts.voice_id = voice.voice_id;
@@ -257,10 +302,11 @@ await api("PATCH", `/v1/convai/agents/${args.agent}`, { conversation_config: con
 console.log("3. Agente actualizado");
 
 // 4. Verificación
-const [agentAfter, toolAfter, hoursAfter] = await Promise.all([
+const [agentAfter, toolAfter, hoursAfter, messageAfter] = await Promise.all([
   api("GET", `/v1/convai/agents/${args.agent}`),
   api("GET", `/v1/convai/tools/${args.tool}`),
   api("GET", `/v1/convai/tools/${hoursToolId}`),
+  api("GET", `/v1/convai/tools/${messageToolId}`),
 ]);
 const a = agentAfter.conversation_config;
 const t = toolAfter.tool_config;
@@ -275,6 +321,7 @@ check(results, "agente.prompt.llm", a.agent.prompt.llm, args.llm);
 check(results, "agente.prompt.timezone (vacío)", a.agent.prompt.timezone ?? null, null);
 check(results, "agente.prompt.tool_ids incluye submit_order", (a.agent.prompt.tool_ids || []).includes(args.tool), true);
 check(results, "agente.prompt.tool_ids incluye check_hours", (a.agent.prompt.tool_ids || []).includes(hoursToolId), true);
+check(results, "agente.prompt.tool_ids incluye take_message", (a.agent.prompt.tool_ids || []).includes(messageToolId), true);
 check(results, "agente.dynamic_variable_placeholders.restaurant_id", a.agent.dynamic_variables?.dynamic_variable_placeholders?.restaurant_id, args.restaurant);
 check(results, "agente.tts.model_id", a.tts.model_id, voice.tts_model);
 check(results, "agente.tts.voice_id", a.tts.voice_id, voice.voice_id);
@@ -304,6 +351,17 @@ check(results, "check_hours.method", h.api_schema?.method, "GET");
 check(results, "check_hours.header X-Webhook-Secret -> secret_id", h.api_schema?.request_headers?.["X-Webhook-Secret"]?.secret_id, secret.secret_id);
 check(results, "check_hours.restaurant_id <- {{restaurant_id}}", h.api_schema?.path_params_schema?.restaurant_id?.dynamic_variable, "restaurant_id");
 check(results, "check_hours.response_timeout_secs", h.response_timeout_secs, TOOL_TIMEOUT_SECS);
+
+const m = messageAfter.tool_config;
+const mb = m.api_schema?.request_body_schema || {};
+check(results, "take_message.url", m.api_schema?.url, MESSAGE_URL);
+check(results, "take_message.method", m.api_schema?.method, "POST");
+check(results, "take_message.header X-Webhook-Secret -> secret_id", m.api_schema?.request_headers?.["X-Webhook-Secret"]?.secret_id, secret.secret_id);
+check(results, "take_message.required", [...(mb.required || [])].sort(), ["reason", "restaurant_id"]);
+check(results, "take_message.restaurant_id <- {{restaurant_id}}", mb.properties?.restaurant_id?.dynamic_variable, "restaurant_id");
+check(results, "take_message.caller_id <- {{system__caller_id}}", mb.properties?.caller_id?.dynamic_variable, "system__caller_id");
+check(results, "take_message.reason.enum", mb.properties?.reason?.enum, ["cerrado", "no_entendio", "otro"]);
+check(results, "take_message.response_timeout_secs", m.response_timeout_secs, TOOL_TIMEOUT_SECS);
 
 console.log("\n4. Verificación:");
 for (const r of results) {

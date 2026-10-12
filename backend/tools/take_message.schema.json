@@ -1,0 +1,40 @@
+{
+  "name": "take_message",
+  "description": "Registra un mensaje para que el restaurante le devuelva la llamada al cliente. Llámala SIEMPRE que ofrezcas que el restaurante le va a llamar (restaurante cerrado, no le entendiste, u otro caso), después de tener su teléfono. Funciona aunque el restaurante esté cerrado. Si falla, no prometas la llamada.",
+  "method": "POST",
+  "url": "https://ai-recepcionist-kwao.onrender.com/webhook/take-message",
+  "headers": {
+    "X-Webhook-Secret": "<WEBHOOK_SECRET, configurado como secreto en ElevenLabs — nunca en el repo>"
+  },
+  "parameters": {
+    "type": "object",
+    "required": ["restaurant_id", "reason"],
+    "properties": {
+      "restaurant_id": {
+        "type": "string",
+        "description": "Viene de la dynamic variable {{restaurant_id}}."
+      },
+      "caller_id": {
+        "type": "string",
+        "description": "Número de quien llama. Viene de la dynamic variable {{system__caller_id}}."
+      },
+      "customer_name": {
+        "type": "string",
+        "description": "Nombre del cliente, si lo dio."
+      },
+      "customer_phone": {
+        "type": "string",
+        "description": "Número que el cliente dio para que le llamen. Si no dio uno distinto, omítelo y se usa el de la llamada."
+      },
+      "reason": {
+        "type": "string",
+        "enum": ["cerrado", "no_entendio", "otro"],
+        "description": "cerrado = llamó fuera de horario; no_entendio = no se le entendió tras varios intentos; otro = cualquier otro motivo."
+      },
+      "message": {
+        "type": "string",
+        "description": "Resumen breve de lo que quería el cliente."
+      }
+    }
+  }
+}

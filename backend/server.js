@@ -237,6 +237,84 @@ app.post("/webhook/submit-order", requireSecret, async (req, res) => {
   });
 });
 
+// --- Mensajes para devolver la llamada (tool take_message) ---
+// Funciona aunque el restaurante esté cerrado: es justo el caso de uso.
+const MESSAGE_REASONS = ["cerrado", "no_entendio", "otro"];
+const REASON_LABELS = { cerrado: "llamó con el restaurante cerrado", no_entendio: "el agente no le entendió", otro: "otro motivo" };
+
+async function sendCallbackNotification(config, record) {
+  const lines = [
+    `Llamada pendiente ${record.message_id}`,
+    `Cliente: ${record.customer_name || "sin nombre"}`,
+    `Teléfono: ${record.customer_phone}`,
+    `Motivo: ${REASON_LABELS[record.reason]}`,
+    ...(record.message ? [`Mensaje: ${record.message}`] : []),
+  ];
+  console.log(`[WHATSAPP STUB] -> ${config.delivery_output.whatsapp_number}:\n${lines.join("\n")}`);
+}
+
+app.post("/webhook/take-message", requireSecret, async (req, res) => {
+  const body = req.body || {};
+  const config = loadRestaurantConfig(body.restaurant_id);
+  if (!config) {
+    return res.status(404).json({
+      ok: false,
+      error: "No se pudo registrar el mensaje porque no encontré la configuración del restaurante. No le prometas al cliente que le van a llamar; pídele que vuelva a llamar más tarde.",
+    });
+  }
+
+  const clean = (v) => (typeof v === "string" ? v.trim() : "");
+  // customer_phone es el número que dio el cliente; caller_id, el de la
+  // llamada. Se usa el que dio el cliente y, si no dio, el de la llamada.
+  const phone = clean(body.customer_phone) || clean(body.caller_id);
+  if (phone.replace(/\D/g, "").length < 7) {
+    return res.status(400).json({
+      ok: false,
+      error: "Falta un número de teléfono válido para devolver la llamada. Pídele al cliente su número completo, con lada, y vuelve a intentarlo.",
+    });
+  }
+  if (!MESSAGE_REASONS.includes(body.reason)) {
+    return res.status(400).json({
+      ok: false,
+      error: `El motivo debe ser "cerrado", "no_entendio" u "otro". Vuelve a enviarlo con uno de esos valores.`,
+    });
+  }
+
+  const record = {
+    message_id: crypto.randomBytes(3).toString("hex").toUpperCase(),
+    restaurant_id: config.restaurant_id,
+    customer_name: clean(body.customer_name),
+    customer_phone: phone,
+    caller_id: clean(body.caller_id),
+    reason: body.reason,
+    message: clean(body.message),
+    received_at: new Date().toISOString(),
+    status: "pending",
+  };
+  fs.appendFileSync(path.join(ORDERS_DIR, `${record.restaurant_id}.messages.jsonl`), JSON.stringify(record) + "\n");
+
+  if (config.delivery_output?.type === "whatsapp") {
+    await sendCallbackNotification(config, record);
+  }
+
+  return res.json({
+    ok: true,
+    message_id: record.message_id,
+    message: `Mensaje registrado. El restaurante le devolverá la llamada al ${phone}.`,
+  });
+});
+
+// Mensajes pendientes de un restaurante (dashboard). Protegido: tiene teléfonos.
+app.get("/restaurants/:id/messages", requireSecret, (req, res) => {
+  if (!RESTAURANT_ID_PATTERN.test(req.params.id)) {
+    return res.status(400).json({ ok: false, error: "restaurant_id inválido." });
+  }
+  const file = path.join(ORDERS_DIR, `${req.params.id}.messages.jsonl`);
+  if (!fs.existsSync(file)) return res.json({ messages: [] });
+  const lines = fs.readFileSync(file, "utf-8").trim().split("\n").filter(Boolean);
+  res.json({ messages: lines.map((l) => JSON.parse(l)).reverse() });
+});
+
 // Estado de horario (lo usa la tool check_hours del agente). El agente lee
 // "message" tal cual; el resto es contexto en texto natural de 12 horas.
 app.get("/restaurants/:id/status", requireSecret, (req, res) => {
